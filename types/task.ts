@@ -6,7 +6,7 @@ export type TaskContext = "home" | "computer" | "shop" | "outside";
 
 export type Project = {
   id: number;
-  user_id: string;
+  user_id: string | null;
   name: string;
   description: string;
   created_at: string;
@@ -14,7 +14,7 @@ export type Project = {
 
 export type Task = {
   id: number;
-  user_id: string;
+  user_id: string | null;
   title: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -22,5 +22,16 @@ export type Task = {
   due_date: string | null;
   project_id: number | null;
   is_quick_task: boolean;
+  created_at: string;
+};
+
+export type SubtaskStatus = "todo" | "done";
+
+export type Subtask = {
+  id: number;
+  user_id: string | null;
+  task_id: number;
+  title: string;
+  status: SubtaskStatus;
   created_at: string;
 };
