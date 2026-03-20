@@ -1,44 +1,63 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import AuthGate from "../components/AuthGate";
 import { supabase } from "../lib/supabase";
 import { Project, Task } from "../types/task";
 
 export default function DashboardPage() {
-  return (
-    <AuthGate>
-      <DashboardContent />
-    </AuthGate>
-  );
-}
-
-function DashboardContent() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [inboxInput, setInboxInput] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const sortTasksByPriorityAndDate = (taskList: Task[], todayStr: string) => {
+    return [...taskList].sort((a, b) => {
+      const aMust = a.must_do_today ? 1 : 0;
+      const bMust = b.must_do_today ? 1 : 0;
+      if (aMust !== bMust) return bMust - aMust;
+
+      const aOverdue = a.due_date && a.due_date < todayStr ? 1 : 0;
+      const bOverdue = b.due_date && b.due_date < todayStr ? 1 : 0;
+      if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+
+      const aDueToday = a.due_date === todayStr ? 1 : 0;
+      const bDueToday = b.due_date === todayStr ? 1 : 0;
+      if (aDueToday !== bDueToday) return bDueToday - aDueToday;
+
+      const aScheduledToday = a.scheduled_date === todayStr ? 1 : 0;
+      const bScheduledToday = b.scheduled_date === todayStr ? 1 : 0;
+      if (aScheduledToday !== bScheduledToday) return bScheduledToday - aScheduledToday;
+
+      const priorityOrder = { high: 3, medium: 2, low: 1 };
+      const priorityDiff = priorityOrder[b.priority] - priorityOrder[a.priority];
+      if (priorityDiff !== 0) return priorityDiff;
+
+      const aMinutes = a.estimated_minutes ?? 9999;
+      const bMinutes = b.estimated_minutes ?? 9999;
+      if (aMinutes !== bMinutes) return aMinutes - bMinutes;
+
+      if (a.due_date && b.due_date) return a.due_date.localeCompare(b.due_date);
+      if (a.due_date && !b.due_date) return -1;
+      if (!a.due_date && b.due_date) return 1;
+
+      return b.created_at.localeCompare(a.created_at);
+    });
+  };
 
   const loadData = async () => {
     setLoading(true);
 
     const { data: taskData, error: taskError } = await supabase
       .from("tasks")
-      .select("*")
-      .order("created_at", { ascending: false });
+      .select("*");
 
     const { data: projectData, error: projectError } = await supabase
       .from("projects")
       .select("*")
       .order("created_at", { ascending: false });
 
-    if (taskError) {
-      console.error("Load tasks error:", taskError.message);
-    }
-
-    if (projectError) {
-      console.error("Load projects error:", projectError.message);
-    }
+    if (taskError) console.error("Load tasks error:", taskError.message);
+    if (projectError) console.error("Load projects error:", projectError.message);
 
     setTasks((taskData as Task[]) || []);
     setProjects((projectData as Project[]) || []);
@@ -49,7 +68,14 @@ function DashboardContent() {
     loadData();
   }, []);
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const today = new Date();
+  const todayStr = today.toISOString().split("T")[0];
+
+  const endOfWeek = new Date(today);
+  const day = endOfWeek.getDay();
+  const daysUntilSunday = day === 0 ? 0 : 7 - day;
+  endOfWeek.setDate(endOfWeek.getDate() + daysUntilSunday);
+  const endOfWeekStr = endOfWeek.toISOString().split("T")[0];
 
   const getProjectName = (projectId: number | null) => {
     if (projectId === null) return "No Project";
@@ -65,63 +91,114 @@ function DashboardContent() {
     return tasks.filter((task) => task.status === "inbox");
   }, [tasks]);
 
-  const quickTasks = useMemo(() => {
-    return tasks
-      .filter((task) => task.is_quick_task && task.status !== "done")
-      .sort((a, b) => {
-        const priorityOrder = { high: 3, medium: 2, low: 1 };
-        return priorityOrder[b.priority] - priorityOrder[a.priority];
-      })
-      .slice(0, 6);
-  }, [tasks]);
-
   const overdueTasks = useMemo(() => {
-    return tasks.filter(
-      (task) =>
-        task.status !== "done" &&
-        task.due_date &&
-        task.due_date < todayStr
-    );
-  }, [tasks, todayStr]);
-
-  const dueSoonTasks = useMemo(() => {
-    return tasks
-      .filter(
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
         (task) =>
           task.status !== "done" &&
           task.due_date &&
-          task.due_date >= todayStr
+          task.due_date < todayStr
+      ),
+      todayStr
+    );
+  }, [tasks, todayStr]);
+
+  const dueTodayTasks = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.due_date === todayStr
+      ),
+      todayStr
+    );
+  }, [tasks, todayStr]);
+
+  const dueThisWeekTasks = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.due_date &&
+          task.due_date >= todayStr &&
+          task.due_date <= endOfWeekStr
+      ),
+      todayStr
+    );
+  }, [tasks, todayStr, endOfWeekStr]);
+
+  const scheduledTodayTasks = useMemo(() => {
+    return [...tasks]
+      .filter(
+        (task) =>
+          task.status !== "done" &&
+          task.scheduled_date === todayStr
       )
-      .sort((a, b) => (a.due_date || "").localeCompare(b.due_date || ""))
-      .slice(0, 5);
+      .sort((a, b) => {
+        if (a.start_time && b.start_time) return a.start_time.localeCompare(b.start_time);
+        if (a.start_time && !b.start_time) return -1;
+        if (!a.start_time && b.start_time) return 1;
+        return 0;
+      });
   }, [tasks, todayStr]);
 
   const todayTop3 = useMemo(() => {
-    return [...tasks]
-      .filter((task) => task.status !== "done" && task.status !== "inbox")
-      .sort((a, b) => {
-        const priorityOrder = { high: 3, medium: 2, low: 1 };
+    return sortTasksByPriorityAndDate(
+      tasks.filter((task) => task.status !== "done" && task.status !== "inbox"),
+      todayStr
+    ).slice(0, 3);
+  }, [tasks, todayStr]);
 
-        if (a.due_date && a.due_date < todayStr && (!b.due_date || b.due_date >= todayStr)) {
-          return -1;
-        }
-        if (b.due_date && b.due_date < todayStr && (!a.due_date || a.due_date >= todayStr)) {
-          return 1;
-        }
+  const quickWins = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.status !== "inbox" &&
+          task.estimated_minutes !== null &&
+          task.estimated_minutes <= 15
+      ),
+      todayStr
+    ).slice(0, 6);
+  }, [tasks, todayStr]);
 
-        const priorityDiff =
-          priorityOrder[b.priority] - priorityOrder[a.priority];
-        if (priorityDiff !== 0) return priorityDiff;
+  const mediumFocus = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.status !== "inbox" &&
+          task.estimated_minutes !== null &&
+          task.estimated_minutes > 15 &&
+          task.estimated_minutes <= 60
+      ),
+      todayStr
+    ).slice(0, 6);
+  }, [tasks, todayStr]);
 
-        if (a.due_date && b.due_date) {
-          return a.due_date.localeCompare(b.due_date);
-        }
-        if (a.due_date) return -1;
-        if (b.due_date) return 1;
+  const deepWork = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.status !== "inbox" &&
+          task.estimated_minutes !== null &&
+          task.estimated_minutes > 60
+      ),
+      todayStr
+    ).slice(0, 6);
+  }, [tasks, todayStr]);
 
-        return 0;
-      })
-      .slice(0, 3);
+  const noEstimateTasks = useMemo(() => {
+    return sortTasksByPriorityAndDate(
+      tasks.filter(
+        (task) =>
+          task.status !== "done" &&
+          task.status !== "inbox" &&
+          task.estimated_minutes === null
+      ),
+      todayStr
+    ).slice(0, 6);
   }, [tasks, todayStr]);
 
   const projectSummary = useMemo(() => {
@@ -151,10 +228,23 @@ function DashboardContent() {
       due_date: null,
       project_id: null,
       is_quick_task: true,
+      estimated_minutes: null,
+      notes: null,
+      reference_link: null,
+      scheduled_date: null,
+      start_time: null,
+      end_time: null,
+      recurring_enabled: false,
+      recurring_type: null,
+      recurring_interval: null,
+      recurring_days_of_week: null,
+      energy_level: null,
+      must_do_today: false,
+      user_id: null,
     });
 
     if (error) {
-      console.error("Add inbox task error:", error.message);
+      alert("新增 Inbox 失败：" + error.message);
       return;
     }
 
@@ -172,94 +262,165 @@ function DashboardContent() {
       .eq("id", taskId);
 
     if (error) {
-      console.error("Update task status error:", error.message);
+      alert("修改任务状态失败：" + error.message);
       return;
     }
 
     loadData();
   };
 
-  const makeQuickTaskDone = async (taskId: number) => {
-    await updateTaskStatus(taskId, "done");
-  };
+  const renderTaskCard = (task: Task) => (
+    <div key={task.id} className="panel-soft card-pad">
+      <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+      <div className="task-meta">
+        {getProjectName(task.project_id)} · {task.priority} · {task.context}
+      </div>
+
+      <div className="badge-row">
+        <div className="badge">Due: {task.due_date || "N/A"}</div>
+        <div className="badge">
+          Time: {task.estimated_minutes !== null ? `${task.estimated_minutes} min` : "N/A"}
+        </div>
+        <div className="badge">Scheduled: {task.scheduled_date || "N/A"}</div>
+        <div className="badge">
+          Slot:{" "}
+          {task.start_time || task.end_time
+            ? `${task.start_time || "--"} - ${task.end_time || "--"}`
+            : "N/A"}
+        </div>
+        <div className="badge">Energy: {task.energy_level || "N/A"}</div>
+        {task.must_do_today && <div className="badge">Must Today</div>}
+        {task.is_quick_task && <div className="badge">Quick</div>}
+        {task.recurring_enabled && (
+          <div className="badge">Repeat: {task.recurring_type || "yes"}</div>
+        )}
+      </div>
+
+      {(task.reference_link || task.notes) && (
+        <div className="notes-box">
+          {task.reference_link && (
+            <div style={{ marginBottom: task.notes ? 8 : 0 }}>
+              <span style={{ fontWeight: 600 }}>Link:</span>{" "}
+              <a
+                href={task.reference_link}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  color: "var(--blue-text)",
+                  textDecoration: "underline",
+                  wordBreak: "break-all",
+                }}
+              >
+                {task.reference_link}
+              </a>
+            </div>
+          )}
+          {task.notes && (
+            <div style={{ whiteSpace: "pre-wrap" }}>
+              <span style={{ fontWeight: 600 }}>Notes:</span> {task.notes}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+        <button
+          onClick={() => updateTaskStatus(task.id, "doing")}
+          className="secondary-btn"
+        >
+          Move to doing
+        </button>
+        <button
+          onClick={() => updateTaskStatus(task.id, "done")}
+          className="primary-btn"
+        >
+          Mark done
+        </button>
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
-      <div className="px-6 py-8 md:px-10">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-          Loading dashboard...
-        </div>
+      <div className="page-wrap">
+        <div className="panel card-pad">Loading dashboard...</div>
       </div>
     );
   }
 
   return (
-    <div className="px-6 py-8 md:px-10">
-      <header className="mb-8">
-        <p className="text-sm text-neutral-500">Dashboard</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Today</h1>
-        <p className="mt-2 text-neutral-600">
-          打开这个页面，就知道今天最值得先做什么。
-        </p>
+    <div className="page-wrap">
+      <header className="page-header">
+        <div className="page-kicker">Dashboard</div>
+        <h1 className="page-title">Today</h1>
+        <div className="page-desc">
+          首页会根据今天、截止日期、时间块和精力等级帮你安排任务。
+        </div>
       </header>
 
-      <section className="mb-6 grid gap-4 md:grid-cols-4">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-neutral-500">Active Tasks</p>
-          <p className="mt-2 text-3xl font-semibold">{activeTasks.length}</p>
+      <section className="tight-grid-2" style={{ marginBottom: 12 }}>
+        <div className="panel card-pad">
+          <div className="text-muted" style={{ fontSize: 12 }}>Active</div>
+          <div className="stat-number">{activeTasks.length}</div>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-neutral-500">Inbox</p>
-          <p className="mt-2 text-3xl font-semibold">{inboxTasks.length}</p>
+        <div className="panel card-pad">
+          <div className="text-muted" style={{ fontSize: 12 }}>Overdue</div>
+          <div className="stat-number">{overdueTasks.length}</div>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-neutral-500">Quick Tasks</p>
-          <p className="mt-2 text-3xl font-semibold">{quickTasks.length}</p>
+        <div className="panel card-pad">
+          <div className="text-muted" style={{ fontSize: 12 }}>Due Today</div>
+          <div className="stat-number">{dueTodayTasks.length}</div>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-neutral-500">Overdue</p>
-          <p className="mt-2 text-3xl font-semibold">{overdueTasks.length}</p>
+        <div className="panel card-pad">
+          <div className="text-muted" style={{ fontSize: 12 }}>Scheduled Today</div>
+          <div className="stat-number">{scheduledTodayTasks.length}</div>
         </div>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-3">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm lg:col-span-2">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Today Top 3</h2>
-            <span className="text-sm text-neutral-400">最值得先做</span>
+      <section className="tight-grid-2" style={{ marginBottom: 12 }}>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Today Top 3
           </div>
 
-          <div className="space-y-3">
+          <div className="tight-grid">
             {todayTop3.length === 0 ? (
-              <div className="rounded-xl bg-neutral-50 p-4 text-sm text-neutral-500">
-                还没有可执行任务。先去 All Tasks 新增，或者先在 Inbox 记下来。
+              <div className="panel-soft card-pad text-muted">
+                还没有可执行任务。
               </div>
             ) : (
               todayTop3.map((task, index) => (
-                <div
-                  key={task.id}
-                  className="rounded-xl border border-neutral-200 p-4"
-                >
-                  <p className="text-sm text-neutral-400">{index + 1}</p>
-                  <p className="mt-1 font-medium">{task.title}</p>
-                  <p className="mt-1 text-sm text-neutral-500">
-                    {getProjectName(task.project_id)} · {task.priority} ·{" "}
-                    {task.context} · {task.due_date || "No due date"}
-                  </p>
+                <div key={task.id} className="panel-soft card-pad">
+                  <div className="text-muted" style={{ fontSize: 12 }}>
+                    {index + 1}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>
+                    {task.title}
+                  </div>
+                  <div className="task-meta">
+                    {getProjectName(task.project_id)} · {task.priority} · {task.context}
+                  </div>
+                  <div className="task-meta">
+                    Due: {task.due_date || "N/A"} · Time:{" "}
+                    {task.estimated_minutes !== null
+                      ? `${task.estimated_minutes} min`
+                      : "N/A"}
+                    {task.must_do_today ? " · Must Today" : ""}
+                  </div>
 
-                  <div className="mt-3 flex flex-wrap gap-2">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <button
                       onClick={() => updateTaskStatus(task.id, "doing")}
-                      className="rounded-lg bg-white px-3 py-2 text-sm text-neutral-700 ring-1 ring-neutral-200 hover:bg-neutral-100"
+                      className="secondary-btn"
                     >
                       Move to doing
                     </button>
                     <button
                       onClick={() => updateTaskStatus(task.id, "done")}
-                      className="rounded-lg bg-neutral-900 px-3 py-2 text-sm text-white hover:opacity-90"
+                      className="primary-btn"
                     >
                       Mark done
                     </button>
@@ -270,31 +431,30 @@ function DashboardContent() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Quick Tasks</h2>
-            <span className="text-sm text-neutral-400">3 分钟</span>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Today Timeline
           </div>
 
-          <div className="space-y-3 text-sm">
-            {quickTasks.length === 0 ? (
-              <div className="rounded-xl bg-neutral-50 p-3 text-neutral-500">
-                暂时没有 quick tasks
+          <div className="tight-grid">
+            {scheduledTodayTasks.length === 0 ? (
+              <div className="panel-soft card-pad text-muted">
+                今天还没有安排到具体时间的任务。
               </div>
             ) : (
-              quickTasks.map((task) => (
-                <div key={task.id} className="rounded-xl bg-neutral-50 p-3">
-                  <div className="font-medium text-neutral-900">{task.title}</div>
-                  <div className="mt-1 text-xs text-neutral-500">
-                    {task.context} · {task.priority}
+              scheduledTodayTasks.map((task) => (
+                <div key={task.id} className="panel-soft card-pad">
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                  <div className="task-meta">
+                    {task.start_time || "--"} - {task.end_time || "--"} ·{" "}
+                    {getProjectName(task.project_id)}
                   </div>
-                  <div className="mt-3">
-                    <button
-                      onClick={() => makeQuickTaskDone(task.id)}
-                      className="rounded-lg bg-white px-3 py-2 text-xs text-neutral-700 ring-1 ring-neutral-200 hover:bg-neutral-100"
-                    >
-                      Done
-                    </button>
+                  <div className="task-meta">
+                    Time:{" "}
+                    {task.estimated_minutes !== null
+                      ? `${task.estimated_minutes} min`
+                      : "N/A"}
+                    {task.energy_level ? ` · Energy: ${task.energy_level}` : ""}
                   </div>
                 </div>
               ))
@@ -303,48 +463,120 @@ function DashboardContent() {
         </div>
       </section>
 
-      <section className="mt-6 grid gap-6 lg:grid-cols-2">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Inbox</h2>
-            <span className="text-sm text-neutral-400">先记下来</span>
+      <section className="tight-grid-2" style={{ marginBottom: 12 }}>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Quick Wins
+          </div>
+          <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            ≤ 15 min
           </div>
 
-          <div className="mb-4 flex gap-3">
+          <div className="tight-grid">
+            {quickWins.length === 0 ? (
+              <div className="panel-soft card-pad text-muted">没有短任务</div>
+            ) : (
+              quickWins.map(renderTaskCard)
+            )}
+          </div>
+        </div>
+
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Medium Focus
+          </div>
+          <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            16–60 min
+          </div>
+
+          <div className="tight-grid">
+            {mediumFocus.length === 0 ? (
+              <div className="panel-soft card-pad text-muted">没有中等时长任务</div>
+            ) : (
+              mediumFocus.map(renderTaskCard)
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="tight-grid-2" style={{ marginBottom: 12 }}>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Deep Work
+          </div>
+          <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            &gt; 60 min
+          </div>
+
+          <div className="tight-grid">
+            {deepWork.length === 0 ? (
+              <div className="panel-soft card-pad text-muted">
+                没有长时专注任务
+              </div>
+            ) : (
+              deepWork.map(renderTaskCard)
+            )}
+          </div>
+        </div>
+
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            No Estimate Yet
+          </div>
+          <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            还没估时
+          </div>
+
+          <div className="tight-grid">
+            {noEstimateTasks.length === 0 ? (
+              <div className="panel-soft card-pad text-muted">
+                所有任务都已经有预计时长
+              </div>
+            ) : (
+              noEstimateTasks.map(renderTaskCard)
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="tight-grid-2" style={{ marginBottom: 12 }}>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Inbox
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
             <input
               type="text"
               value={inboxInput}
               onChange={(e) => setInboxInput(e.target.value)}
-              placeholder="输入一句话，比如：明天记得交作业"
-              className="flex-1 rounded-xl border border-neutral-200 px-4 py-3 outline-none focus:border-neutral-400"
+              placeholder="快速记下一件事"
+              style={{ padding: "10px 12px", flex: 1 }}
             />
-            <button
-              onClick={handleAddInbox}
-              className="rounded-xl bg-neutral-900 px-5 py-3 text-white hover:opacity-90"
-            >
+            <button onClick={handleAddInbox} className="primary-btn">
               Add
             </button>
           </div>
 
-          <div className="space-y-2 text-sm text-neutral-600">
+          <div className="tight-grid">
             {inboxTasks.length === 0 ? (
-              <div className="rounded-xl bg-neutral-50 p-3 text-neutral-500">
+              <div className="panel-soft card-pad text-muted">
                 Inbox 目前是空的
               </div>
             ) : (
-              inboxTasks.slice(0, 6).map((task) => (
-                <div key={task.id} className="rounded-xl bg-neutral-50 p-3">
-                  <div className="font-medium text-neutral-900">{task.title}</div>
-                  <div className="mt-2 flex flex-wrap gap-2">
+              inboxTasks.slice(0, 8).map((task) => (
+                <div key={task.id} className="panel-soft card-pad">
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <button
                       onClick={() => updateTaskStatus(task.id, "todo")}
-                      className="rounded-lg bg-white px-3 py-2 text-xs text-neutral-700 ring-1 ring-neutral-200 hover:bg-neutral-100"
+                      className="secondary-btn"
                     >
                       Move to todo
                     </button>
                     <button
                       onClick={() => updateTaskStatus(task.id, "done")}
-                      className="rounded-lg bg-white px-3 py-2 text-xs text-neutral-700 ring-1 ring-neutral-200 hover:bg-neutral-100"
+                      className="primary-btn"
                     >
                       Done
                     </button>
@@ -355,53 +587,53 @@ function DashboardContent() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Due Soon / Overdue</h2>
-            <span className="text-sm text-neutral-400">提醒</span>
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+            Due / Overdue
           </div>
 
-          <div className="space-y-3">
-            {overdueTasks.length > 0 && (
-              <div>
-                <p className="mb-2 text-sm font-medium text-red-600">Overdue</p>
-                <div className="space-y-2">
-                  {overdueTasks.slice(0, 4).map((task) => (
-                    <div
-                      key={task.id}
-                      className="rounded-xl border border-red-200 bg-red-50 p-3"
-                    >
-                      <div className="font-medium text-neutral-900">
-                        {task.title}
-                      </div>
-                      <div className="mt-1 text-xs text-neutral-600">
+          <div className="tight-grid">
+            <div>
+              <div
+                className="text-muted"
+                style={{ fontSize: 12, marginBottom: 8, color: "var(--danger-text)" }}
+              >
+                Overdue
+              </div>
+
+              <div className="tight-grid">
+                {overdueTasks.length === 0 ? (
+                  <div className="panel-soft card-pad text-muted">
+                    没有 overdue 任务
+                  </div>
+                ) : (
+                  overdueTasks.slice(0, 4).map((task) => (
+                    <div key={task.id} className="panel-soft card-pad">
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                      <div className="task-meta">
                         {task.due_date} · {getProjectName(task.project_id)}
                       </div>
                     </div>
-                  ))}
-                </div>
+                  ))
+                )}
               </div>
-            )}
+            </div>
 
             <div>
-              <p className="mb-2 text-sm font-medium text-neutral-700">
-                Due Soon
-              </p>
-              <div className="space-y-2">
-                {dueSoonTasks.length === 0 ? (
-                  <div className="rounded-xl bg-neutral-50 p-3 text-sm text-neutral-500">
-                    暂时没有即将到期任务
+              <div className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                Due This Week
+              </div>
+
+              <div className="tight-grid">
+                {dueThisWeekTasks.length === 0 ? (
+                  <div className="panel-soft card-pad text-muted">
+                    本周没有即将到期任务
                   </div>
                 ) : (
-                  dueSoonTasks.map((task) => (
-                    <div
-                      key={task.id}
-                      className="rounded-xl bg-neutral-50 p-3"
-                    >
-                      <div className="font-medium text-neutral-900">
-                        {task.title}
-                      </div>
-                      <div className="mt-1 text-xs text-neutral-600">
+                  dueThisWeekTasks.slice(0, 5).map((task) => (
+                    <div key={task.id} className="panel-soft card-pad">
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                      <div className="task-meta">
                         {task.due_date} · {getProjectName(task.project_id)}
                       </div>
                     </div>
@@ -413,39 +645,33 @@ function DashboardContent() {
         </div>
       </section>
 
-      <section className="mt-6 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Projects Overview</h2>
-          <span className="text-sm text-neutral-400">进度概览</span>
+      <section className="panel card-pad">
+        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
+          Projects Overview
         </div>
 
         {projectSummary.length === 0 ? (
-          <div className="rounded-xl bg-neutral-50 p-4 text-sm text-neutral-500">
+          <div className="panel-soft card-pad text-muted">
             还没有项目，先去 Projects 页面创建。
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="tight-grid-2">
             {projectSummary.map((project) => (
-              <div
-                key={project.id}
-                className="rounded-xl border border-neutral-200 p-4"
-              >
-                <div className="font-medium">{project.name}</div>
-                <div className="mt-1 text-sm text-neutral-500">
+              <div key={project.id} className="panel-soft card-pad">
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{project.name}</div>
+                <div className="task-meta">
                   {project.description || "No description"}
                 </div>
-                <div className="mt-3 text-sm text-neutral-700">
+                <div className="task-meta" style={{ marginTop: 8 }}>
                   {project.doneCount}/{project.totalCount} tasks done
                 </div>
-                <div className="mt-3 h-2 rounded-full bg-neutral-100">
+                <div className="progress-track">
                   <div
-                    className="h-2 rounded-full bg-neutral-900"
+                    className="progress-bar"
                     style={{ width: `${project.progress}%` }}
                   />
                 </div>
-                <div className="mt-2 text-xs text-neutral-500">
-                  Progress: {project.progress}%
-                </div>
+                <div className="task-meta">Progress: {project.progress}%</div>
               </div>
             ))}
           </div>
