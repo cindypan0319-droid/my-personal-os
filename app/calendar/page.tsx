@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
+import { PageHeader } from "../../components/app/PageHeader";
 import { Project, Task } from "../../types/task";
 
 type CalendarDay = {
@@ -27,17 +28,14 @@ export default function CalendarPage() {
   const loadData = async () => {
     setLoading(true);
 
-    const { data: taskData, error: taskError } = await supabase
-      .from("tasks")
-      .select("*");
-
+    const { data: taskData, error: taskError } = await supabase.from("tasks").select("*");
     const { data: projectData, error: projectError } = await supabase
       .from("projects")
       .select("*")
       .order("created_at", { ascending: false });
 
-    if (taskError) console.error("Load tasks error:", taskError.message);
-    if (projectError) console.error("Load projects error:", projectError.message);
+    if (taskError) console.error(taskError.message);
+    if (projectError) console.error(projectError.message);
 
     setTasks((taskData as Task[]) || []);
     setProjects((projectData as Project[]) || []);
@@ -57,24 +55,12 @@ export default function CalendarPage() {
     });
   }, [currentMonth]);
 
-  const getProjectName = (projectId: number | null) => {
-    if (projectId === null) return "No Project";
-    const project = projects.find((item) => item.id === projectId);
-    return project ? project.name : "No Project";
-  };
-
-  const changeMonth = (offset: number) => {
-    setCurrentMonth(
-      (prev) => new Date(prev.getFullYear(), prev.getMonth() + offset, 1)
-    );
-  };
-
   const calendarDays = useMemo(() => {
     const year = currentMonth.getFullYear();
     const month = currentMonth.getMonth();
 
     const firstDayOfMonth = new Date(year, month, 1);
-    const firstWeekday = firstDayOfMonth.getDay(); // 0=Sun
+    const firstWeekday = firstDayOfMonth.getDay();
     const startDate = new Date(year, month, 1 - firstWeekday);
 
     const days: CalendarDay[] = [];
@@ -83,11 +69,9 @@ export default function CalendarPage() {
       const d = new Date(startDate);
       d.setDate(startDate.getDate() + i);
 
-      const dateStr = new Date(
-        d.getFullYear(),
-        d.getMonth(),
-        d.getDate()
-      ).toISOString().split("T")[0];
+      const dateStr = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+        .toISOString()
+        .split("T")[0];
 
       days.push({
         date: dateStr,
@@ -100,32 +84,47 @@ export default function CalendarPage() {
   }, [currentMonth]);
 
   const getTasksForDate = (date: string) => {
-    const dayTasks = tasks.filter(
-      (task) =>
-        task.status !== "done" &&
-        (task.scheduled_date === date || task.due_date === date)
-    );
+    return tasks
+      .filter(
+        (task) =>
+          task.status !== "done" &&
+          (task.scheduled_date === date || task.due_date === date)
+      )
+      .sort((a, b) => {
+        const aScheduled = a.scheduled_date === date ? 1 : 0;
+        const bScheduled = b.scheduled_date === date ? 1 : 0;
+        if (aScheduled !== bScheduled) return bScheduled - aScheduled;
 
-    return [...dayTasks].sort((a, b) => {
-      const aScheduled = a.scheduled_date === date ? 1 : 0;
-      const bScheduled = b.scheduled_date === date ? 1 : 0;
-      if (aScheduled !== bScheduled) return bScheduled - aScheduled;
+        if (a.start_time && b.start_time) return a.start_time.localeCompare(b.start_time);
+        if (a.start_time && !b.start_time) return -1;
+        if (!a.start_time && b.start_time) return 1;
 
-      if (a.start_time && b.start_time) return a.start_time.localeCompare(b.start_time);
-      if (a.start_time && !b.start_time) return -1;
-      if (!a.start_time && b.start_time) return 1;
-
-      const priorityOrder = { high: 3, medium: 2, low: 1 };
-      const diff = priorityOrder[b.priority] - priorityOrder[a.priority];
-      if (diff !== 0) return diff;
-
-      return a.title.localeCompare(b.title);
-    });
+        return a.title.localeCompare(b.title);
+      });
   };
 
-  const selectedDateTasks = useMemo(() => {
-    return getTasksForDate(selectedDate);
-  }, [tasks, selectedDate]);
+  const selectedDateTasks = useMemo(() => getTasksForDate(selectedDate), [tasks, selectedDate]);
+
+  const getProjectName = (projectId: number | null) => {
+    if (projectId === null) return "No Project";
+    return projects.find((p) => p.id === projectId)?.name || "No Project";
+  };
+
+  const toggleDone = async (task: Task) => {
+    const nextStatus = task.status === "done" ? "todo" : "done";
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: nextStatus })
+      .eq("id", task.id);
+
+    if (error) {
+      alert("修改任务状态失败：" + error.message);
+      return;
+    }
+
+    await loadData();
+  };
 
   if (loading) {
     return (
@@ -136,49 +135,50 @@ export default function CalendarPage() {
   }
 
   return (
-    <div className="page-wrap">
-      <header className="page-header">
-        <div className="page-kicker">Calendar</div>
-        <h1 className="page-title">Calendar View</h1>
-        <div className="page-desc">
-          看每一天的 scheduled task 和 due task。
-        </div>
-      </header>
-
-      <section className="panel card-pad" style={{ marginBottom: 12 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 8,
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{monthLabel}</div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button onClick={() => changeMonth(-1)} className="secondary-btn">
+    <div className="page-wrap calendar-layout">
+      <PageHeader
+        kicker="Calendar"
+        title="Calendar"
+        description="A lighter month view for due and scheduled tasks."
+        actions={
+          <>
+            <button
+              className="secondary-btn"
+              onClick={() =>
+                setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+              }
+            >
               Prev
             </button>
+
             <button
+              className="secondary-btn"
               onClick={() => {
                 const now = new Date();
                 setCurrentMonth(new Date(now.getFullYear(), now.getMonth(), 1));
                 setSelectedDate(now.toISOString().split("T")[0]);
               }}
-              className="secondary-btn"
             >
               Today
             </button>
-            <button onClick={() => changeMonth(1)} className="secondary-btn">
+
+            <button
+              className="secondary-btn"
+              onClick={() =>
+                setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+              }
+            >
               Next
             </button>
-          </div>
-        </div>
+          </>
+        }
+      />
+
+      <section className="panel card-pad" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 18, fontWeight: 700 }}>{monthLabel}</div>
       </section>
 
-      <section className="tight-grid-2">
+      <section className="calendar-main">
         <div className="panel card-pad">
           <div
             style={{
@@ -192,12 +192,7 @@ export default function CalendarPage() {
               <div
                 key={label}
                 className="text-muted"
-                style={{
-                  fontSize: 12,
-                  textAlign: "center",
-                  fontWeight: 600,
-                  padding: "4px 0",
-                }}
+                style={{ fontSize: 12, textAlign: "center", fontWeight: 700, padding: "4px 0" }}
               >
                 {label}
               </div>
@@ -224,14 +219,10 @@ export default function CalendarPage() {
                   style={{
                     minHeight: 108,
                     textAlign: "left",
-                    padding: 8,
-                    borderRadius: 14,
-                    border: isSelected
-                      ? "1px solid var(--primary)"
-                      : "1px solid var(--border)",
-                    background: day.inCurrentMonth
-                      ? "var(--panel)"
-                      : "var(--panel-2)",
+                    padding: 10,
+                    borderRadius: 16,
+                    border: isSelected ? "1px solid var(--primary)" : "1px solid var(--border)",
+                    background: day.inCurrentMonth ? "#fff" : "var(--panel-soft)",
                     color: "var(--text)",
                   }}
                 >
@@ -240,7 +231,7 @@ export default function CalendarPage() {
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
-                      marginBottom: 6,
+                      marginBottom: 10,
                     }}
                   >
                     <span
@@ -253,66 +244,54 @@ export default function CalendarPage() {
                       {day.dayNumber}
                     </span>
 
-                    {isToday && (
+                    {isToday ? (
                       <span
                         style={{
                           fontSize: 10,
                           padding: "4px 6px",
                           borderRadius: 999,
                           background: "var(--primary)",
-                          color: "var(--primary-text)",
+                          color: "#fff",
                           lineHeight: 1,
                         }}
                       >
                         Today
                       </span>
-                    )}
+                    ) : null}
                   </div>
 
-                  <div style={{ display: "grid", gap: 4 }}>
-                    {dayTasks.slice(0, 3).map((task) => {
-                      const isScheduled = task.scheduled_date === day.date;
-                      const isDue = task.due_date === day.date;
-
-                      return (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {dayTasks.slice(0, 3).map((task) => (
+                      <div key={task.id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: 999,
+                            background:
+                              task.scheduled_date === day.date
+                                ? "var(--primary)"
+                                : "var(--warning)",
+                          }}
+                        />
                         <div
-                          key={task.id}
                           style={{
                             fontSize: 11,
-                            lineHeight: 1.25,
-                            padding: "5px 6px",
-                            borderRadius: 10,
-                            background: "var(--panel-2)",
-                            border: "1px solid var(--border)",
-                            color: "var(--text)",
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                            textOverflow: "ellipsis",
                           }}
                         >
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {task.title}
-                          </div>
-                          <div className="text-muted" style={{ fontSize: 10, marginTop: 2 }}>
-                            {isScheduled && isDue
-                              ? "scheduled + due"
-                              : isScheduled
-                              ? "scheduled"
-                              : "due"}
-                          </div>
+                          {task.title}
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
 
-                    {dayTasks.length > 3 && (
+                    {dayTasks.length > 3 ? (
                       <div className="text-muted" style={{ fontSize: 11 }}>
                         +{dayTasks.length - 3} more
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </button>
               );
@@ -320,131 +299,48 @@ export default function CalendarPage() {
           </div>
         </div>
 
-        <div className="panel card-pad">
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>
-            {selectedDate}
-          </div>
+        <aside className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>{selectedDate}</div>
 
           <div className="tight-grid">
             {selectedDateTasks.length === 0 ? (
-              <div className="panel-soft card-pad text-muted">
-                这一天没有 scheduled / due 任务。
+              <div className="panel-soft card-pad empty-state">
+                No due or scheduled tasks on this day.
               </div>
             ) : (
-              selectedDateTasks.map((task) => {
-                const isScheduled = task.scheduled_date === selectedDate;
-                const isDue = task.due_date === selectedDate;
-
-                return (
-                  <div key={task.id} className="panel-soft card-pad">
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
-
-                    <div className="task-meta">
-                      {getProjectName(task.project_id)} · {task.priority} · {task.context}
-                    </div>
-
-                    <div className="badge-row">
-                      <div className="badge">
-                        {isScheduled && isDue
-                          ? "scheduled + due"
-                          : isScheduled
-                          ? "scheduled"
-                          : "due"}
-                      </div>
-                      <div className="badge">Status: {task.status}</div>
-                      <div className="badge">
-                        Time:{" "}
-                        {task.estimated_minutes !== null
-                          ? `${task.estimated_minutes} min`
-                          : "N/A"}
-                      </div>
-                      <div className="badge">
-                        Slot:{" "}
-                        {task.start_time || task.end_time
-                          ? `${task.start_time || "--"} - ${task.end_time || "--"}`
-                          : "N/A"}
-                      </div>
-                      <div className="badge">Energy: {task.energy_level || "N/A"}</div>
-                      {task.must_do_today && <div className="badge">Must Today</div>}
-                      {task.recurring_enabled && (
-                        <div className="badge">
-                          Repeat: {task.recurring_type || "yes"}
-                        </div>
-                      )}
-                    </div>
-
-                    {(task.reference_link || task.notes) && (
-                      <div className="notes-box">
-                        {task.reference_link && (
-                          <div style={{ marginBottom: task.notes ? 8 : 0 }}>
-                            <span style={{ fontWeight: 600 }}>Link:</span>{" "}
-                            <a
-                              href={task.reference_link}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{
-                                color: "var(--blue-text)",
-                                textDecoration: "underline",
-                                wordBreak: "break-all",
-                              }}
-                            >
-                              {task.reference_link}
-                            </a>
-                          </div>
-                        )}
-                        {task.notes && (
-                          <div style={{ whiteSpace: "pre-wrap" }}>
-                            <span style={{ fontWeight: 600 }}>Notes:</span> {task.notes}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                      <button
-                        onClick={async () => {
-                          const { error } = await supabase
-                            .from("tasks")
-                            .update({ status: "doing" })
-                            .eq("id", task.id);
-
-                          if (error) {
-                            alert("修改任务状态失败：" + error.message);
-                            return;
-                          }
-
-                          loadData();
-                        }}
-                        className="secondary-btn"
-                      >
-                        Move to doing
-                      </button>
-
-                      <button
-                        onClick={async () => {
-                          const { error } = await supabase
-                            .from("tasks")
-                            .update({ status: "done" })
-                            .eq("id", task.id);
-
-                          if (error) {
-                            alert("修改任务状态失败：" + error.message);
-                            return;
-                          }
-
-                          loadData();
-                        }}
-                        className="primary-btn"
-                      >
-                        Mark done
-                      </button>
-                    </div>
+              selectedDateTasks.map((task) => (
+                <div key={task.id} className="panel-soft card-pad">
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                  <div className="task-meta">
+                    {getProjectName(task.project_id)} · {task.priority} · {task.context}
                   </div>
-                );
-              })
+
+                  <div className="badge-row">
+                    <div className="badge">
+                      {task.scheduled_date === selectedDate && task.due_date === selectedDate
+                        ? "scheduled + due"
+                        : task.scheduled_date === selectedDate
+                        ? "scheduled"
+                        : "due"}
+                    </div>
+
+                    {task.start_time || task.end_time ? (
+                      <div className="badge">
+                        {task.start_time || "--"} - {task.end_time || "--"}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <button className="primary-btn" onClick={() => toggleDone(task)}>
+                      Done
+                    </button>
+                  </div>
+                </div>
+              ))
             )}
           </div>
-        </div>
+        </aside>
       </section>
     </div>
   );
