@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { PageHeader } from "../../components/app/PageHeader";
-import { Project, Task } from "../../types/task";
+import { Project, Task, formatDuration } from "../../types/task";
 
 export default function TimelinePage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -37,6 +37,8 @@ export default function TimelinePage() {
     loadData();
   }, []);
 
+  const todayStr = new Date().toISOString().split("T")[0];
+
   const timeSlots = useMemo(() => {
     const slots: string[] = [];
     for (let hour = 6; hour <= 22; hour++) {
@@ -45,27 +47,39 @@ export default function TimelinePage() {
     return slots;
   }, []);
 
+  const visibleTasks = useMemo(
+    () => tasks.filter((task) => task.is_active !== false && task.status !== "done"),
+    [tasks]
+  );
+
   const timelineTasks = useMemo(() => {
-    return [...tasks]
+    return [...visibleTasks]
       .filter(
         (task) =>
-          task.status !== "done" &&
           task.scheduled_date === selectedDate &&
           task.start_time &&
           task.end_time
       )
       .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""));
-  }, [tasks, selectedDate]);
+  }, [visibleTasks, selectedDate]);
 
-  const unscheduledTasks = useMemo(() => {
-    return [...tasks]
+  const taskPool = useMemo(() => {
+    return [...visibleTasks]
       .filter((task) => {
-        if (task.status === "done") return false;
-        const related = task.scheduled_date === selectedDate || task.due_date === selectedDate;
         const noSlot = !task.start_time || !task.end_time;
-        return related && noSlot;
+        const matchesDay =
+          task.scheduled_date === selectedDate ||
+          task.due_date === selectedDate ||
+          !!task.must_do_today ||
+          (selectedDate === todayStr && !!task.is_quick_task);
+
+        return matchesDay && noSlot;
       })
       .sort((a, b) => {
+        const aQuick = a.is_quick_task ? 1 : 0;
+        const bQuick = b.is_quick_task ? 1 : 0;
+        if (aQuick !== bQuick) return bQuick - aQuick;
+
         const aMust = a.must_do_today ? 1 : 0;
         const bMust = b.must_do_today ? 1 : 0;
         if (aMust !== bMust) return bMust - aMust;
@@ -73,7 +87,7 @@ export default function TimelinePage() {
         const priorityOrder = { high: 3, medium: 2, low: 1 };
         return priorityOrder[b.priority] - priorityOrder[a.priority];
       });
-  }, [tasks, selectedDate]);
+  }, [visibleTasks, selectedDate, todayStr]);
 
   const getProjectName = (projectId: number | null) => {
     if (projectId === null) return "No Project";
@@ -160,7 +174,7 @@ export default function TimelinePage() {
       <PageHeader
         kicker="Timeline"
         title="Daily Timeline"
-        description="Assign work into a cleaner day planner."
+        description="The right side now shows quick tasks, scheduled work, and due work for the chosen day."
         actions={
           <>
             <input
@@ -207,6 +221,12 @@ export default function TimelinePage() {
                           <div className="task-meta">
                             {task.start_time || "--"} - {task.end_time || "--"} ·{" "}
                             {getProjectName(task.project_id)}
+                          </div>
+
+                          <div className="badge-row" style={{ marginTop: 8 }}>
+                            {task.is_quick_task ? <div className="badge">quick</div> : null}
+                            {task.must_do_today ? <div className="badge">must today</div> : null}
+                            <div className="badge">{formatDuration(task)}</div>
                           </div>
 
                           {editingTaskId !== task.id ? (
@@ -270,21 +290,28 @@ export default function TimelinePage() {
 
         <aside className="panel card-pad">
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
-            Unscheduled For This Day
+            Task Pool For {selectedDate}
           </div>
 
           <div className="tight-grid">
-            {unscheduledTasks.length === 0 ? (
+            {taskPool.length === 0 ? (
               <div className="panel-soft card-pad empty-state">
-                No unscheduled tasks for this day.
+                No quick tasks, due tasks, or unscheduled tasks for this day.
               </div>
             ) : (
-              unscheduledTasks.map((task) => (
+              taskPool.map((task) => (
                 <div key={task.id} className="panel-soft card-pad">
                   <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
                   <div className="task-meta">
                     {getProjectName(task.project_id)} · {task.priority} · Due:{" "}
                     {task.due_date || "N/A"}
+                  </div>
+
+                  <div className="badge-row" style={{ marginTop: 8 }}>
+                    {task.is_quick_task ? <div className="badge">quick</div> : null}
+                    {task.must_do_today ? <div className="badge">must today</div> : null}
+                    {task.scheduled_date === selectedDate ? <div className="badge">scheduled</div> : null}
+                    <div className="badge">{formatDuration(task)}</div>
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>

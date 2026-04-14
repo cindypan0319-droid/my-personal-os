@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { PageHeader } from "../components/app/PageHeader";
 import { Project, Task } from "../types/task";
@@ -35,23 +35,53 @@ export default function DashboardPage() {
 
   const todayStr = new Date().toISOString().split("T")[0];
 
-  const activeTasks = tasks.filter((task) => task.status !== "done");
-  const overdueTasks = tasks.filter(
-    (task) => task.status !== "done" && task.due_date && task.due_date < todayStr
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => task.status !== "done" && task.is_active !== false),
+    [tasks]
   );
-  const dueTodayTasks = tasks.filter(
-    (task) => task.status !== "done" && task.due_date === todayStr
+
+  const quickTasksToday = useMemo(
+    () =>
+      activeTasks
+        .filter((task) => !!task.is_quick_task)
+        .sort((a, b) => {
+          const aMust = taskBool(a.must_do_today) ? 1 : 0;
+          const bMust = taskBool(b.must_do_today) ? 1 : 0;
+          if (aMust !== bMust) return bMust - aMust;
+          return b.created_at.localeCompare(a.created_at);
+        }),
+    [activeTasks]
   );
-  const scheduledTodayTasks = tasks
-    .filter((task) => task.status !== "done" && task.scheduled_date === todayStr)
+
+  const overdueTasks = activeTasks.filter(
+    (task) => task.due_date && task.due_date < todayStr
+  );
+
+  const dueTodayTasks = activeTasks.filter((task) => task.due_date === todayStr);
+
+  const scheduledTodayTasks = activeTasks
+    .filter((task) => task.scheduled_date === todayStr)
     .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""));
 
-  const todayFocus = [...tasks]
-    .filter((task) => task.status !== "done" && task.status !== "inbox")
+  const todayFocus = [...activeTasks]
+    .filter(
+      (task) =>
+        task.status !== "inbox" &&
+        (
+          !!task.is_quick_task ||
+          !!task.must_do_today ||
+          task.due_date === todayStr ||
+          task.scheduled_date === todayStr
+        )
+    )
     .sort((a, b) => {
       const aMust = taskBool(a.must_do_today) ? 1 : 0;
       const bMust = taskBool(b.must_do_today) ? 1 : 0;
       if (aMust !== bMust) return bMust - aMust;
+
+      const aQuick = taskBool(a.is_quick_task) ? 1 : 0;
+      const bQuick = taskBool(b.is_quick_task) ? 1 : 0;
+      if (aQuick !== bQuick) return bQuick - aQuick;
 
       const aToday = a.due_date === todayStr || a.scheduled_date === todayStr ? 1 : 0;
       const bToday = b.due_date === todayStr || b.scheduled_date === todayStr ? 1 : 0;
@@ -60,7 +90,7 @@ export default function DashboardPage() {
       const priorityOrder = { high: 3, medium: 2, low: 1 };
       return priorityOrder[b.priority] - priorityOrder[a.priority];
     })
-    .slice(0, 3);
+    .slice(0, 5);
 
   const inboxTasks = tasks.filter((task) => task.status === "inbox").slice(0, 6);
 
@@ -81,14 +111,18 @@ export default function DashboardPage() {
 
     const { error } = await supabase.from("tasks").insert({
       title: inboxInput.trim(),
+      description: null,
+      notes: null,
       status: "inbox",
       priority: "medium",
       context: "home",
       due_date: null,
       project_id: null,
       is_quick_task: true,
-      estimated_minutes: null,
-      notes: null,
+      is_active: true,
+      duration_input_value: 1,
+      duration_input_unit: "hours",
+      estimated_minutes: 60,
       reference_link: null,
       scheduled_date: null,
       start_time: null,
@@ -142,7 +176,7 @@ export default function DashboardPage() {
       <PageHeader
         kicker="Dashboard"
         title="Today"
-        description="A lighter overview of what matters today."
+        description="Quick tasks now show here by default until they are completed."
       />
 
       <section className="panel card-pad" style={{ marginBottom: 16 }}>
@@ -186,8 +220,8 @@ export default function DashboardPage() {
           <div className="stat-number">{activeTasks.length}</div>
         </div>
         <div className="panel card-pad stat-card">
-          <div className="stat-label">Overdue</div>
-          <div className="stat-number">{overdueTasks.length}</div>
+          <div className="stat-label">Quick Today</div>
+          <div className="stat-number">{quickTasksToday.length}</div>
         </div>
         <div className="panel card-pad stat-card">
           <div className="stat-label">Due Today</div>
@@ -215,6 +249,7 @@ export default function DashboardPage() {
                   <div className="task-meta">
                     {task.priority} · Due: {task.due_date || "N/A"}
                     {task.must_do_today ? " · Must today" : ""}
+                    {task.is_quick_task ? " · Quick" : ""}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <button className="secondary-btn" onClick={() => moveToDoing(task.id)}>
@@ -230,6 +265,36 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <div className="panel card-pad">
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Quick Tasks Today</div>
+          <div className="tight-grid">
+            {quickTasksToday.length === 0 ? (
+              <div className="panel-soft card-pad empty-state">No unfinished quick tasks.</div>
+            ) : (
+              quickTasksToday.map((task) => (
+                <div key={task.id} className="panel-soft card-pad">
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                  <div className="task-meta">
+                    {task.priority}
+                    {task.must_do_today ? " · Must today" : ""}
+                    {task.scheduled_date ? ` · Scheduled ${task.scheduled_date}` : ""}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    <button className="secondary-btn" onClick={() => moveToDoing(task.id)}>
+                      Doing
+                    </button>
+                    <button className="primary-btn" onClick={() => markDone(task.id)}>
+                      Done
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="dashboard-grid-2">
         <div className="panel card-pad">
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Today Timeline</div>
           <div className="tight-grid">
@@ -241,41 +306,6 @@ export default function DashboardPage() {
                   <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
                   <div className="task-meta">
                     {task.start_time || "--"} - {task.end_time || "--"} · {task.priority}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="dashboard-grid-2">
-        <div className="panel card-pad">
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Inbox Capture</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <input
-              value={inboxInput}
-              onChange={(e) => setInboxInput(e.target.value)}
-              placeholder="Quick capture"
-            />
-            <button className="primary-btn" onClick={addInbox}>
-              Add
-            </button>
-          </div>
-          <div className="tight-grid">
-            {inboxTasks.length === 0 ? (
-              <div className="panel-soft card-pad empty-state">Inbox is empty.</div>
-            ) : (
-              inboxTasks.map((task) => (
-                <div key={task.id} className="panel-soft card-pad">
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                    <button className="secondary-btn" onClick={() => moveToDoing(task.id)}>
-                      Doing
-                    </button>
-                    <button className="primary-btn" onClick={() => markDone(task.id)}>
-                      Done
-                    </button>
                   </div>
                 </div>
               ))
@@ -337,7 +367,10 @@ export default function DashboardPage() {
                 href={`/projects/${project.id}`}
                 className="panel-soft card-pad"
               >
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{project.name}</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{project.name}</div>
+                  <div className="badge">{project.status}</div>
+                </div>
                 <div className="task-meta">{project.description || "No description"}</div>
                 <div className="task-meta" style={{ marginTop: 8 }}>
                   {project.doneCount}/{project.totalCount} tasks done
@@ -350,6 +383,39 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="panel card-pad">
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Inbox Capture</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            value={inboxInput}
+            onChange={(e) => setInboxInput(e.target.value)}
+            placeholder="Quick capture"
+          />
+          <button className="primary-btn" onClick={addInbox}>
+            Add
+          </button>
+        </div>
+        <div className="tight-grid">
+          {inboxTasks.length === 0 ? (
+            <div className="panel-soft card-pad empty-state">Inbox is empty.</div>
+          ) : (
+            inboxTasks.map((task) => (
+              <div key={task.id} className="panel-soft card-pad">
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                  <button className="secondary-btn" onClick={() => moveToDoing(task.id)}>
+                    Doing
+                  </button>
+                  <button className="primary-btn" onClick={() => markDone(task.id)}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </section>
     </div>
   );

@@ -85,12 +85,18 @@ export default function CalendarPage() {
 
   const getTasksForDate = (date: string) => {
     return tasks
-      .filter(
-        (task) =>
-          task.status !== "done" &&
-          (task.scheduled_date === date || task.due_date === date)
-      )
+      .filter((task) => {
+        if (task.status === "done") return false;
+        if (task.is_active === false) return false;
+        if (task.scheduled_date === date || task.due_date === date) return true;
+        if (date === todayStr && task.is_quick_task) return true;
+        return false;
+      })
       .sort((a, b) => {
+        const aQuick = a.is_quick_task ? 1 : 0;
+        const bQuick = b.is_quick_task ? 1 : 0;
+        if (aQuick !== bQuick) return bQuick - aQuick;
+
         const aScheduled = a.scheduled_date === date ? 1 : 0;
         const bScheduled = b.scheduled_date === date ? 1 : 0;
         if (aScheduled !== bScheduled) return bScheduled - aScheduled;
@@ -139,7 +145,7 @@ export default function CalendarPage() {
       <PageHeader
         kicker="Calendar"
         title="Calendar"
-        description="A lighter month view for due and scheduled tasks."
+        description="Month view for due tasks, scheduled work, and unfinished quick tasks on today."
         actions={
           <>
             <button
@@ -268,10 +274,11 @@ export default function CalendarPage() {
                             width: 8,
                             height: 8,
                             borderRadius: 999,
-                            background:
-                              task.scheduled_date === day.date
-                                ? "var(--primary)"
-                                : "var(--warning)",
+                            background: task.is_quick_task
+                              ? "var(--success)"
+                              : task.scheduled_date === day.date
+                              ? "var(--primary)"
+                              : "var(--warning)",
                           }}
                         />
                         <div
@@ -305,23 +312,34 @@ export default function CalendarPage() {
           <div className="tight-grid">
             {selectedDateTasks.length === 0 ? (
               <div className="panel-soft card-pad empty-state">
-                No due or scheduled tasks on this day.
+                No due, scheduled, or quick tasks on this day.
               </div>
             ) : (
               selectedDateTasks.map((task) => (
-                <div key={task.id} className="panel-soft card-pad">
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</div>
+                <div key={task.id} className="panel-soft card-pad" style={{ opacity: task.status === "done" ? 0.7 : 1 }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 600,
+                      textDecoration: task.status === "done" ? "line-through" : "none",
+                    }}
+                  >
+                    {task.title}
+                  </div>
                   <div className="task-meta">
                     {getProjectName(task.project_id)} · {task.priority} · {task.context}
                   </div>
 
                   <div className="badge-row">
+                    {task.is_quick_task ? <div className="badge">quick</div> : null}
                     <div className="badge">
                       {task.scheduled_date === selectedDate && task.due_date === selectedDate
                         ? "scheduled + due"
                         : task.scheduled_date === selectedDate
                         ? "scheduled"
-                        : "due"}
+                        : task.due_date === selectedDate
+                        ? "due"
+                        : "today quick"}
                     </div>
 
                     {task.start_time || task.end_time ? (
